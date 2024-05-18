@@ -1,67 +1,200 @@
-import os
-import numpy as np
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.applications import ResNet50
-from tensorflow.keras.layers import Input, Flatten, Dense
+# Authors: Daniel Chang and Jesse Ge
+
+# This file contains the main code to develop, train, and test the model.
+# It also graphs the results.
+
+
+import tensorflow as tf
+from tensorflow.keras.applications import ResNet50, VGG16, InceptionV3
+from tensorflow.keras.layers import Input, Flatten, Dense, Dropout, Average
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import LearningRateScheduler, ModelCheckpoint
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.layers import BatchNormalization
+import matplotlib.pyplot as plt
 
-# Define paths to your data directories
-train_data_dir = 'Data/Train'  # Directory containing training data
-test_data_dir = 'Data/Test'    # Directory containing test data
 
-# Image dimensions
-img_height, img_width = 224, 224  # ResNet50 input size
+train_data_dir = 'Data/Train'
+test_data_dir = 'Data/Test'
 
-# Preprocess and augment data
-train_datagen = ImageDataGenerator(
+# Prepare image for processing. In this case, we will make all images 128x128
+height = 128
+width = 128
+
+# Data preprocessing for model training:
+#   rescale: Normalize pixels (0-255) to speed up training
+#   rotation_range: Rotating image randomly between (-10, 10) degrees for pattern recognition.
+#   width_shift_range: Moving image left or right by 10% of width.
+#   height_shift_range: Same as above, but moving vertically. 10% as well.
+#   shear_range: Changing slant/angle of the image to train the model on different angles.
+#   zoom_range: Zooms in or out.
+#   horizontal_flip: Flips images randomly. Since images are randomly facing left or right, this doesn't do much but acts as a premeasure.
+#   fill_mode: If an image is transformed, this will fill empty pixels that results from the transformation.
+model_train = ImageDataGenerator(
     rescale=1./255,
-    rotation_range=20,
-    width_shift_range=0.2,
-    height_shift_range=0.2,
-    shear_range=0.2,
-    zoom_range=0.2,
+    rotation_range=10,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    shear_range=0.1,
+    zoom_range=0.1,
     horizontal_flip=True,
     fill_mode='nearest'
 )
 
-test_datagen = ImageDataGenerator(rescale=1./255)
+# Data preprocessing for model testing:
+# Only need rescaling here for image quality; otherwise everything else is pretty much done in training.
+model_test = ImageDataGenerator(rescale=1./255)
 
-# Create data generators for training and test sets
-train_generator = train_datagen.flow_from_directory(
+# Data generator parameters for training:
+#   (training data directory,
+#   size of each image,
+#   batch size (how many images to process at once),
+#   class mode (labels of arrays - 2D arrays)
+model_training_data = model_train.flow_from_directory(
     train_data_dir,
-    target_size=(img_height, img_width),
-    batch_size=32,
+    target_size=(height, width),
+    batch_size=64,
     class_mode='categorical'
 )
 
-test_generator = test_datagen.flow_from_directory(
+# Data generator parameters for testing:
+#   (testing data directory,
+#   size of each image,
+#   batch size (how many images to process at once),
+#   class mode (labels of arrays - 2D arrays)
+model_testing_data = model_test.flow_from_directory(
     test_data_dir,
-    target_size=(img_height, img_width),
-    batch_size=32,
+    target_size=(height, width),
+    batch_size=64,
     class_mode='categorical'
 )
 
-# Load pre-trained ResNet50 model
-resnet = ResNet50(weights='imagenet', include_top=False, input_tensor=Input(shape=(img_height, img_width, 3)))
+# Prepare the three models we will use (ResNet50, VGG16, InceptionV3)
+#   For each, we use imagenet database as weight for pre-training
+#   Not connecting the model's top layers because we use custom layers
+#   Input information for the image (height, width, RGB color)
+resnet50 = ResNet50(weights='imagenet', include_top=False,
+                    input_tensor=Input(shape=(height, width, 3)))
+vgg16 = VGG16(weights='imagenet', include_top=False,
+              input_tensor=Input(shape=(height, width, 3)))
+inceptionv3 = InceptionV3(weights='imagenet', include_top=False,
+                          input_tensor=Input(shape=(height, width, 3)))
 
-# Freeze ResNet50 layers (optional)
-for layer in resnet.layers:
-    layer.trainable = False
+# We decided to not use all layers for each model.
+# Using last 20 layers.
+for i in (resnet50, vgg16, inceptionv3):
+    for j in i.layers[:-20]:
+        j.trainable = False
 
-# Build custom top layers for classification
-x = Flatten()(resnet.output)
-x = Dense(512, activation='relu')(x)
-predictions = Dense(len(train_generator.class_indices), activation='softmax')(x)
+# Adjusting the top layers of models:
+#   Flatten = turning 2D/XD output into 1D for dense layer input
+#   Dense = Layer, Rectified Linear Unit = non-linearity
+#   BatchNormalization = Normalizes batch
+#   Dropout = Prevents overfitting
 
-# Create model
-model = Model(inputs=resnet.input, outputs=predictions)
 
-# Compile model
-model.compile(optimizer=Adam(), loss='categorical_crossentropy', metrics=['accuracy'])
+def adjust(base_model):
+    x = Flatten()(base_model.output)
+    x = Dense(1024, activation='relu', kernel_regularizer=l2(0.01))(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.5)(x)
 
-# Train the model
-model.fit(train_generator, epochs=10, validation_data=test_generator)
+    # Another dense layer that outputs probability distribution for classifying class
+    predictions = Dense(len(model_training_data.class_indices),
+                        activation='softmax')(x)
 
-# Save the model
-model.save('sea_animal_classifier.h5')
+    return Model(inputs=base_model.input, outputs=predictions)
+
+
+# Apply adjustment of layers to each model
+resnet_top = adjust(resnet50)
+vgg_top = adjust(vgg16)
+inception_top = adjust(inceptionv3)
+
+# Input takes height, width, RGB of image
+model_input = Input(shape=(height, width, 3))
+
+# For each model, take the model_input of those models.
+resnet50_res = resnet_top(model_input)
+vgg16_res = vgg_top(model_input)
+inceptionv3_res = inception_top(model_input)
+
+# Ensemble for acerage of those model outputs
+ensemble_res = Average()([resnet50_res, vgg16_res, inceptionv3_res])
+
+# Run the ensemble model using the inputs of each model
+ensemble_model = Model(inputs=model_input, outputs=ensemble_res)
+
+# Compile it
+#   Adam = Adaptive Moment Estimation; optimization algorithm that reduces noise
+ensemble_model.compile(optimizer=Adam(learning_rate=0.0001),
+                       loss='categorical_crossentropy', metrics=['accuracy'])
+
+
+# For each epoch, learning rate is ajdusted. Only five epochs instead of 10.
+def lr_adjust(epoch, lr):
+    if epoch < 5:
+        return lr
+    else:
+        return lr * tf.math.exp(-0.1)
+
+
+callback_learningrate = LearningRateScheduler(lr_adjust)
+
+# Model Checkpoint
+checkpoint = ModelCheckpoint(
+    'best_ensemble_model.keras', save_best_only=True, monitor='val_loss', mode='min')
+
+# We train the ensemble model through 5 epochs, using test data as validation, learning rate as callback
+history = ensemble_model.fit(
+    model_training_data,
+    epochs=5,
+    validation_data=model_testing_data,
+    callbacks=[callback_learningrate, checkpoint]
+)
+
+ensemble_model.save('sea_classification.keras')
+
+# Print train and validation accuracies
+print("Train Accuracy:", history.history['accuracy'][-1])
+print("Test Accuracy:", history.history['val_accuracy'][-1])
+
+
+print("Done training.\nProceed to graph.")
+# ----------------------- GRAPHING
+
+
+def graph_accuracy(history):
+    epoch = range(1, 5)
+
+    plt.figure(figsize=(16, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(epoch, history.history['accuracy'])
+    plt.plot(epoch, history.history['val_accuracy'])
+    plt.xlabel('Epoch')
+    plt.ylabel('Test Accuracy')
+
+    plt.savefig('/Graphs/accuracy.png')
+    plt.show()
+
+
+def graph_dataloss(history):
+    epoch = range(1, 5)
+
+    plt.figure(figsize=(16, 5))
+
+    plt.subplot(1, 2, 2)
+    plt.plot(epoch, history.history['loss'])
+    plt.plot(epoch, history.history['val_loss'])
+    plt.xlabel('Epoch')
+    plt.ylabel('Data Loss')
+
+    plt.savefig('/Graphs/loss.png')
+    plt.show()
+
+
+graph_accuracy(history)
+graph_dataloss(history)

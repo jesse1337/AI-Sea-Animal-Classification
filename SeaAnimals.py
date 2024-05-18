@@ -121,7 +121,7 @@ resnet50_res = resnet_top(model_input)
 vgg16_res = vgg_top(model_input)
 inceptionv3_res = inception_top(model_input)
 
-# Ensemble for acerage of those model outputs
+# Ensemble for average of those model outputs
 ensemble_res = Average()([resnet50_res, vgg16_res, inceptionv3_res])
 
 # Run the ensemble model using the inputs of each model
@@ -166,35 +166,26 @@ print("Done training.\nProceed to graph.")
 # ----------------------- GRAPHING
 
 
-def graph_accuracy(history):
-    epoch = range(1, 5)
+def plot_graph(history):
+    epoch = range(1, len(history.history['accuracy']) + 1)
 
-    plt.figure(figsize=(16, 5))
-
+    plt.figure(figsize=(14, 5))
     plt.subplot(1, 2, 1)
-    plt.plot(epoch, history.history['accuracy'])
-    plt.plot(epoch, history.history['val_accuracy'])
+    plt.plot(epoch, history.history['accuracy'], label='Training Accuracy')
+    plt.plot(epoch, history.history['val_accuracy'],
+             label='Validation Accuracy')
     plt.xlabel('Epoch')
-    plt.ylabel('Test Accuracy')
+    plt.ylabel('Accuracy')
 
-    plt.savefig('/Graphs/accuracy.png')
-    plt.show()
-
-
-def graph_dataloss(history):
-    epoch = range(1, 5)
-
-    plt.figure(figsize=(16, 5))
-
+    # Plot loss
     plt.subplot(1, 2, 2)
     plt.plot(epoch, history.history['loss'])
     plt.plot(epoch, history.history['val_loss'])
     plt.xlabel('Epoch')
-    plt.ylabel('Data Loss')
+    plt.ylabel('Loss')
 
-    plt.savefig('/Graphs/loss.png')
+    plt.tight_layout()
     plt.show()
 
 
-graph_accuracy(history)
-graph_dataloss(history)
+plot_graph(history)
